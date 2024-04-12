@@ -10,7 +10,7 @@ import (
 
 func WithListenServer(t *testing.T, test func(server string)) {
 	startPort := int(rand.Int31n(6000) + 10000)
-	server := fmt.Sprintf("localhost:%d", startPort)
+	server := fmt.Sprintf("127.0.0.1:%d", startPort)
 	l, err := net.Listen("tcp", server)
 	if err != nil {
 		t.Fatalf("Failed to start listen server: %v", err)

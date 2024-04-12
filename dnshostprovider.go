@@ -2,6 +2,7 @@ package zk
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"sync"
 )
@@ -12,7 +13,7 @@ import (
 // periodically or if there is trouble connecting.
 type DNSHostProvider struct {
 	mu         sync.Mutex // Protects everything, so we can add asynchronous updates later.
-	servers    []string
+	servers    []inetAddress
 	curr       int
 	last       int
 	lookupHost func(string) ([]string, error) // Override of net.LookupHost, for testing.
@@ -25,38 +26,64 @@ func (hp *DNSHostProvider) Init(servers []string) error {
 	hp.mu.Lock()
 	defer hp.mu.Unlock()
 
-	lookupHost := hp.lookupHost
-	if lookupHost == nil {
-		lookupHost = net.LookupHost
-	}
-
-	found := []string{}
+	addrs := make([]inetAddress, 0, len(servers))
 	for _, server := range servers {
 		host, port, err := net.SplitHostPort(server)
 		if err != nil {
 			return err
 		}
-		addrs, err := lookupHost(host)
-		if err != nil {
-			return err
-		}
-		for _, addr := range addrs {
-			found = append(found, net.JoinHostPort(addr, port))
-		}
+		addrs = append(addrs, inetAddress{host: host, port: port})
 	}
 
-	if len(found) == 0 {
-		return fmt.Errorf("No hosts found for addresses %q", servers)
+	if len(addrs) == 0 {
+		return fmt.Errorf("no hosts found for addresses %q", servers)
 	}
 
-	// Randomize the order of the servers to avoid creating hotspots
-	stringShuffle(found)
+	// shuffle the addresses
+	rand.Shuffle(len(addrs), func(i, j int) {
+		addrs[i], addrs[j] = addrs[j], addrs[i]
+	})
 
-	hp.servers = found
+	hp.servers = addrs
 	hp.curr = -1
 	hp.last = -1
 
 	return nil
+}
+
+type inetAddress struct {
+	host, port string
+	resolved   bool
+}
+
+func (ia inetAddress) addr() string {
+	return net.JoinHostPort(ia.host, ia.port)
+}
+
+func (hp *DNSHostProvider) resolve(addr inetAddress) (inetAddress, error) {
+	if addr.resolved {
+		return addr, nil
+	}
+	lookupHost := hp.lookupHost
+	if lookupHost == nil {
+		lookupHost = net.LookupHost
+	}
+
+	ips, err := lookupHost(addr.host)
+	if err != nil {
+		return addr, err
+	}
+	if len(ips) == 0 {
+		return addr, fmt.Errorf("no hosts found for address %q", addr.host)
+	}
+	rand.Shuffle(len(ips), func(i, j int) {
+		ips[i], ips[j] = ips[j], ips[i]
+	})
+	return inetAddress{
+		host:     ips[0], // use the first IP
+		port:     addr.port,
+		resolved: true,
+	}, nil
 }
 
 // Len returns the number of servers available
@@ -77,7 +104,11 @@ func (hp *DNSHostProvider) Next() (server string, retryStart bool) {
 	if hp.last == -1 {
 		hp.last = 0
 	}
-	return hp.servers[hp.curr], retryStart
+	addr, err := hp.resolve(hp.servers[hp.curr])
+	if err != nil {
+		DefaultLogger.Printf("Error while resolving zk host %s: %s", hp.servers[hp.curr].host, err)
+	}
+	return addr.addr(), retryStart
 }
 
 // Connected notifies the HostProvider of a successful connection.

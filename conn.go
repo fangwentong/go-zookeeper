@@ -491,10 +491,10 @@ func (c *Conn) loop(ctx context.Context) {
 
 			c.sendSetWatches()
 			wg.Wait()
+			disconnectTime = time.Now()
 		}
 
 		c.setState(StateDisconnected)
-		disconnectTime = time.Now()
 
 		select {
 		case <-c.shouldQuit:
